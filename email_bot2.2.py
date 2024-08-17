@@ -8,6 +8,7 @@ import re
 import logging
 from dotenv import load_dotenv
 import os
+
 class EmailSettings(BaseModel):
     email_address: EmailStr
     password: str
