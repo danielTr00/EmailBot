@@ -110,7 +110,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     # Abrufen des Telegram-Bot-Tokens aus den Umgebungsvariablen.
-    TOKEN = "7234456200:AAHa_WVjYC3aGsDcHVT6Sfwk2xkmXN8Xkzw"
+    TOKEN = "xxx"
 
     # Überprüfen, ob der Bot-Token erfolgreich geladen wurde.
     if TOKEN is None:
