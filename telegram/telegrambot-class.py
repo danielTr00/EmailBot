@@ -1,14 +1,9 @@
 import logging
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, Router
+from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram import Router
-from aiogram import Dispatcher
-from aiogram import Bot
-from aiogram import Router
-from aiogram.types import Message
-
-
-from typing import List
+from typing import List, Dict, Callable
+import json
 
 # Einrichten des Loggings, um Informationen, Warnungen und Fehler zu protokollieren.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,82 +12,120 @@ class TelegramBot:
     def __init__(self, token: str):
         """
         Initialisiert den TelegramBot mit dem bereitgestellten Token und richtet
-        den Bot und Dispatcher ein.
-
+        den Bot, Dispatcher und Router ein.
+        
         :param token: Der Token des Telegram-Bots, der von der BotFather-Telegram-Anwendung
                       bereitgestellt wird, um den Bot mit der API zu verbinden.
         """
-        # Initialisieren des Bot-Objekts mit dem angegebenen Token.
         self.bot = Bot(token=token)
-        
-        # Dispatcher verwaltet die Verarbeitung von eingehenden Updates (Nachrichten, Befehle, etc.).
         self.dp = Dispatcher()
         self.router = Router()
         self.dp.include_router(self.router)
 
-        # Registrierung von Handlers, die auf bestimmte Updates reagieren.
-        self.register_handlers()
+        # Hier speichern wir die Nachrichtenverläufe im Speicher.
+        self.chat_histories = {}
 
-    def register_handlers(self):
-        """
-        Registriert die Handler für verschiedene Arten von Updates, die der Bot
-        verarbeiten soll. In diesem Fall wird ein einfacher Nachrichten-Handler
-        registriert.
-        """
-        # Registriert einen Nachrichten-Handler, der alle eingehenden Nachrichten verarbeitet.
-        self.router.message.register(self.handle_message)
+        # Registrierung von Standardbefehlen wie /start und /stop.
+        self.register_default_commands()
 
-    async def handle_message(self, message: Message):
+    def register_default_commands(self):
         """
-        Verarbeitet eingehende Nachrichten, protokolliert sie und sendet eine
-        Echo-Antwort zurück.
+        Registriert Standardbefehle wie /start und /stop.
+        """
+        self.add_command("default_start", self.handle_start)
+        self.add_command("default_stop", self.handle_stop)
 
-        :param message: Die empfangene Nachricht vom Benutzer, die verarbeitet werden soll.
+    def add_command(self, command_name: str, command_handler: Callable):
         """
-        # Loggen der eingehenden Nachricht, einschließlich des Benutzernamens und des Inhalts.
-        logging.info(f"Received message from {message.from_user.username}: {message.text}")
+        Fügt einen neuen Befehl zum Bot hinzu.
+
+        :param command_name: Der Name des Befehls (ohne führendes /).
+        :param command_handler: Die Funktion, die ausgeführt werden soll, wenn der Befehl eingegeben wird.
+        """
+        self.router.message.register(command_handler, Command(commands=[command_name]))
+
+    async def handle_start(self, message: Message):
+        """
+        Verarbeitet den /start Befehl und sendet eine Begrüßungsnachricht zurück.
         
-        # Senden einer Echo-Antwort an den Absender der Nachricht.
-        await message.answer(f"Echo: {message.text}")
+        :param message: Die empfangene Nachricht vom Benutzer.
+        """
+        logging.info(f"Received /start command from {message.from_user.username}")
+        await self.send_message(message.chat.id, "Willkommen! Der Bot ist jetzt aktiv.")
+
+    async def handle_stop(self, message: Message):
+        """
+        Verarbeitet den /stop Befehl und sendet eine Abschiedsmitteilung zurück.
+        
+        :param message: Die empfangene Nachricht vom Benutzer.
+        """
+        logging.info(f"Received /stop command from {message.from_user.username}")
+        await self.send_message(message.chat.id, "Der Bot wird jetzt deaktiviert. Bis zum nächsten Mal!")
 
     async def send_message(self, chat_id: int, text: str):
         """
-        Sendet eine Nachricht an einen spezifischen Chat. 
+        Sendet eine Nachricht an einen spezifischen Chat.
 
         :param chat_id: Die ID des Chats, an den die Nachricht gesendet werden soll.
         :param text: Der Inhalt der Nachricht, die gesendet werden soll.
         """
         try:
-            # Senden der Nachricht an den angegebenen Chat.
             await self.bot.send_message(chat_id, text)
-            
-            # Loggen der erfolgreichen Zustellung der Nachricht.
             logging.info(f"Message sent to {chat_id}: {text}")
         except Exception as e:
-            # Loggen eines Fehlers, falls das Senden der Nachricht fehlschlägt.
             logging.error(f"Failed to send message to {chat_id}: {e}")
 
-    async def get_chat_history(self, chat_id: int, limit: int = 100) -> List[Message]:
+    def save_message_to_history(self, message: Message):
         """
-        Ruft die letzten Nachrichten eines bestimmten Chats ab.
+        Speichert die eingehende Nachricht im Verlauf des Chats.
 
-        :param chat_id: Die ID des Chats, dessen Nachrichten abgerufen werden sollen.
-        :param limit: Die maximale Anzahl der Nachrichten, die abgerufen werden sollen (Standard: 100).
-        :return: Eine Liste der abgerufenen Nachrichten.
+        :param message: Die Nachricht, die gespeichert werden soll.
+        """
+        chat_id = message.chat.id
+        if chat_id not in self.chat_histories:
+            self.chat_histories[chat_id] = []
+
+        # Nachricht speichern
+        self.chat_histories[chat_id].append({
+            "message_id": message.message_id,
+            "from_user": message.from_user.username,
+            "text": message.text
+        })
+
+    async def get_chat_history_json(self, chat_id: int, limit: int = 100) -> List[Dict]:
+        """
+        Gibt den Nachrichtenverlauf eines bestimmten Chats im JSON-Format zurück.
+        Der Verlauf wird intern im Speicher gehalten.
+
+        :param chat_id: Die ID des Chats, dessen Nachrichtenverlauf abgerufen werden soll.
+        :param limit: Die maximale Anzahl der Nachrichten, die abgerufen werden sollen.
+        :return: Eine Liste von Nachrichten im JSON-Format.
+        """
+        # Abrufen des Verlaufs aus dem Speicher
+        if chat_id in self.chat_histories:
+            history = self.chat_histories[chat_id][-limit:]  # Nur die letzten 'limit' Nachrichten
+            logging.info(f"Retrieved {len(history)} messages from chat {chat_id}")
+            return history
+        else:
+            logging.info(f"No history found for chat {chat_id}")
+            return []
+
+
+    async def reply_to_message(self, message: Message, text: str):
+        """
+        Antwortet auf eine erhaltene Nachricht.
+
+        :param message: Die empfangene Nachricht, auf die geantwortet werden soll.
+        :param text: Der Inhalt der Antwortnachricht.
         """
         try:
-            # Abrufen der letzten 'limit' Nachrichten aus dem angegebenen Chat.
-            messages = await self.bot.get_chat_history(chat_id, limit=limit)
-            
-            # Loggen der Anzahl der abgerufenen Nachrichten.
-            logging.info(f"Retrieved {len(messages)} messages from chat {chat_id}")
-            
-            # Rückgabe der abgerufenen Nachrichten.
-            return messages
+            await message.answer(text)
+            logging.info(f"Replied to message from {message.from_user.username}: {text}")
         except Exception as e:
-            # Loggen eines Fehlers, falls das Abrufen der Chat-Historie fehlschlägt.
-            logging.error(f"Failed to retrieve chat history from {chat_id}: {e}")
-            return []
+            logging.error(f"Failed to reply to message: {e}")
+
+        # Nachricht in den Verlauf speichern
+        self.save_message_to_history(message)
 
     async def start(self):
         """
@@ -100,26 +133,77 @@ class TelegramBot:
         """
         await self.bot.delete_webhook(drop_pending_updates=True)
         await self.dp.start_polling(self.bot)
-
-if __name__ == "__main__":
-    import os
-    import asyncio
-    from dotenv import load_dotenv
-
-    # Laden von Umgebungsvariablen aus einer .env-Datei (z.B. Bot-Token).
+from dotenv import load_dotenv
+import asyncio
+import os
+# Hauptfunktion zum Starten des Bots und Drucken der Chat-Historie
+def main():
+    # Laden der Umgebungsvariablen
     load_dotenv()
 
-    # Abrufen des Telegram-Bot-Tokens aus den Umgebungsvariablen.
-    TOKEN = "xxx"
+    # Abrufen des Telegram-Bot-Tokens aus den Umgebungsvariablen
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-    # Überprüfen, ob der Bot-Token erfolgreich geladen wurde.
+    # Überprüfen, ob der Bot-Token erfolgreich geladen wurde
     if TOKEN is None:
-        # Loggen eines Fehlers, falls der Token nicht gefunden wurde.
         logging.error("Telegram bot token not found in environment variables")
-    else:
-        # Initialisieren und Starten des Bots mit dem geladenen Token.
-        bot = TelegramBot(token=TOKEN)
-        
-        # Starten des Bots und des Event Loops.
-        asyncio.run(bot.start())
+        return
 
+    # Initialisieren des Bots
+    bot = TelegramBot(token=TOKEN)
+
+    async def handle_first_message(message: Message):
+        """
+        Handler für die erste eingehende Nachricht. 
+        Verwendet die Chat-ID dieser Nachricht für alle weiteren Tests.
+        
+        :param message: Die empfangene Nachricht vom Benutzer.
+        """
+        test_chat_id = message.chat.id
+
+        # Test 1: Senden einer Nachricht
+        print("Test 1: Senden einer Nachricht...")
+        await bot.send_message(test_chat_id, "Dies ist eine Testnachricht.")
+
+        # Test 2: Antworten auf die eingegangene Nachricht
+        print("Test 2: Antworten auf die Nachricht...")
+        await bot.reply_to_message(message, "Dies ist eine Testantwort auf deine Nachricht.")
+
+        # Test 3: Abrufen des Nachrichtenverlaufs
+        print("Test 3: Abrufen des Nachrichtenverlaufs...")
+        history = await bot.get_chat_history_json(test_chat_id, limit=5)
+        print("Abgerufene Nachrichten:")
+        print(json.dumps(history, indent=4))
+
+        # Test 4: Ausführen der /start- und /stop-Befehle
+        print("Test 4: Ausführen von /start und /stop Befehlen...")
+        # Simulieren einer /start-Nachricht
+        fake_start_message = Message(message_id=2, from_user=message.from_user, 
+                                     chat=message.chat, date=message.date, text="/start")
+        await bot.handle_start(fake_start_message)
+
+        # Simulieren einer /stop-Nachricht
+        fake_stop_message = Message(message_id=3, from_user=message.from_user, 
+                                    chat=message.chat, date=message.date, text="/stop")
+        await bot.handle_stop(fake_stop_message)
+
+        print("Alle Tests abgeschlossen.")
+
+    def register_test_handler():
+        """
+        Registriert einen Handler, der auf die erste eingehende Nachricht wartet und dann die Tests ausführt.
+        """
+        bot.router.message.register(handle_first_message)
+
+    async def start_bot():
+        """
+        Startet den Bot und registriert den Test-Handler.
+        """
+        register_test_handler()
+        await bot.start()
+
+    # Starten des Event Loops und Ausführen des Bots
+    asyncio.run(start_bot())
+
+if __name__ == "__main__":
+    main()
