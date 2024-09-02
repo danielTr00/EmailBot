@@ -19,7 +19,7 @@ def main():
 
     def run_tests():
         # Angenommen, wir haben einen Chat-ID, auf dem die Tests ausgeführt werden sollen
-        test_chat_id = xxx  # Diese ID sollte durch die tatsächliche Chat-ID ersetzt werden
+        test_chat_id = "xxx"  # Diese ID sollte durch die tatsächliche Chat-ID ersetzt werden
 
         logging.info("Starting tests with the optimized TelegramBot class...")
 
