@@ -3,7 +3,7 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from typing import List, Dict, Callable
-
+import asyncio
 
 # Einrichten des Loggings, um Informationen, Warnungen und Fehler zu protokollieren.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,6 +27,10 @@ class TelegramBot:
 
         # Registrierung von Standardbefehlen wie /start und /stop.
         self.register_default_commands()
+        
+        # Registrierung der asynchronen Funktionen für einfacheren externen Aufruf
+
+        self.loop = asyncio.get_event_loop()
 
     def register_default_commands(self):
         """
@@ -52,6 +56,7 @@ class TelegramBot:
         """
         logging.info(f"Received /start command from {message.from_user.username}")
         await self.send_message(message.chat.id, "Willkommen! Der Bot ist jetzt aktiv.")
+        self.save_message_to_history(message)
 
     async def handle_stop(self, message: Message):
         """
@@ -61,6 +66,7 @@ class TelegramBot:
         """
         logging.info(f"Received /stop command from {message.from_user.username}")
         await self.send_message(message.chat.id, "Der Bot wird jetzt deaktiviert. Bis zum nächsten Mal!")
+        self.save_message_to_history(message)
 
     async def send_message(self, chat_id: int, text: str):
         """
@@ -136,3 +142,22 @@ class TelegramBot:
         """
         await self.bot.delete_webhook(drop_pending_updates=True)
         await self.dp.start_polling(self.bot)
+
+    def get_chat_history(self, chat_id: int, limit: int = 100):
+        """
+        Synchroner Wrapper für das Abrufen des Nachrichtenverlaufs.
+        Dies ermöglicht es, den Nachrichtenverlauf synchron zu abrufen, was die Nutzung vereinfacht.
+        """
+        try:
+            # Direkt die asynchrone Funktion aufrufen und auf das Ergebnis warten
+            return self.loop.run_until_complete(self.get_chat_history_json(chat_id, limit))
+        except Exception as e:
+            logging.error(f"Error retrieving chat history: {e}")
+            return []
+        
+    def send_sync_message(self, chat_id: int, text: str):
+        """
+        Synchroner Wrapper zum Senden von Nachrichten.
+        Erlaubt es Benutzern, Nachrichten zu senden, ohne asynchrone Aufrufe explizit zu handhaben.
+        """
+        self.loop.run_until_complete(self.send_message(chat_id, text))
