@@ -3,7 +3,7 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from typing import List, Dict, Callable
-import json
+
 
 # Einrichten des Loggings, um Informationen, Warnungen und Fehler zu protokollieren.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -70,8 +70,9 @@ class TelegramBot:
         :param text: Der Inhalt der Nachricht, die gesendet werden soll.
         """
         try:
-            await self.bot.send_message(chat_id, text)
+            message = await self.bot.send_message(chat_id, text)
             logging.info(f"Message sent to {chat_id}: {text}")
+            self.save_message_to_history(message)
         except Exception as e:
             logging.error(f"Failed to send message to {chat_id}: {e}")
 
@@ -88,14 +89,14 @@ class TelegramBot:
         # Nachricht speichern
         self.chat_histories[chat_id].append({
             "message_id": message.message_id,
-            "from_user": message.from_user.username,
+            "from_user": message.from_user.username if message.from_user else "Bot",
             "text": message.text
         })
 
     async def get_chat_history_json(self, chat_id: int, limit: int = 100) -> List[Dict]:
         """
         Gibt den Nachrichtenverlauf eines bestimmten Chats im JSON-Format zurück.
-        Der Verlauf wird intern im Speicher gehalten.
+        Der Verlauf wird intern im Speicher gehalten und enthält sowohl Nachrichten des Benutzers als auch des Bots.
 
         :param chat_id: Die ID des Chats, dessen Nachrichtenverlauf abgerufen werden soll.
         :param limit: Die maximale Anzahl der Nachrichten, die abgerufen werden sollen.
@@ -119,10 +120,12 @@ class TelegramBot:
         :param text: Der Inhalt der Antwortnachricht.
         """
         try:
-            await message.answer(text)
+            reply_message = await message.answer(text)
             logging.info(f"Replied to message from {message.from_user.username}: {text}")
+            self.save_message_to_history(reply_message)
         except Exception as e:
             logging.error(f"Failed to reply to message: {e}")
+        
 
         # Nachricht in den Verlauf speichern
         self.save_message_to_history(message)
