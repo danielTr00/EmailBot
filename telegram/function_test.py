@@ -1,9 +1,9 @@
 import os
 import logging
+import json
 from telegrambot.telegrambot2 import TelegramBot
 from dotenv import load_dotenv
 from aiogram.types import Message
-
 from aiogram.types import Chat, User
 from datetime import datetime
 
@@ -19,7 +19,7 @@ def main():
 
     def run_tests():
         # Angenommen, wir haben einen Chat-ID, auf dem die Tests ausgeführt werden sollen
-        test_chat_id = "xxx"  # Diese ID sollte durch die tatsächliche Chat-ID ersetzt werden
+        test_chat_id = 749002085  # Diese ID sollte durch die tatsächliche Chat-ID ersetzt werden
 
         logging.info("Starting tests with the optimized TelegramBot class...")
 
@@ -28,7 +28,6 @@ def main():
             logging.debug("Test 1: Senden einer Nachricht...")
             bot.send_sync_message(test_chat_id, "Dies ist eine Testnachricht.")
             logging.info("Test 1 erfolgreich: Nachricht gesendet.")
-
 
             # Test 2: Ausführen der /start- und /stop-Befehle
             logging.debug("Test 2: Ausführen von /start und /stop Befehlen...")
@@ -56,10 +55,19 @@ def main():
             logging.debug(f"Abgerufene Nachrichten:\n{history}")
             print(history)
 
+            # Test 4: Abrufen aller aktiven Chats
+            logging.debug("Test 4: Abrufen aller aktiven Chats...")
+            active_chats = bot.get_active_chats()
+            logging.info(f"Test 4 erfolgreich: {len(active_chats)} aktive Chats gefunden.")
+            logging.debug(f"Aktive Chats:\n{json.dumps(active_chats, indent=4)}")
+            print(active_chats)
+
             logging.info("Alle Tests erfolgreich abgeschlossen.")
+
 
         except Exception as e:
             logging.error(f"Fehler während des Testens: {e}")
+
 
     run_tests()
 
