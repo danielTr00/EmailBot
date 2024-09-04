@@ -1,192 +1,270 @@
 import smtplib
 import imaplib
-import email as email_lib
-from email.message import EmailMessage, Message
-from pydantic import BaseModel, EmailStr, field_validator
+import email
+from email.message import EmailMessage
 from typing import List, Optional
-import re
 import logging
-from dotenv import load_dotenv
-import os
 
-class EmailSettings(BaseModel):
-    email_address: EmailStr
-    password: str
-    smtp_server: str
-    imap_server: str
+# Initialisiere Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    @field_validator('password')
-    def validate_password(cls, value):
-        if len(value) < 8:
-            raise ValueError("Password must be at least 8 characters long")
-        return value
+class EmailBot:
+    """
+    EmailBot ermöglicht das Senden und Empfangen von E-Mails über verschiedene E-Mail-Anbieter,
+    die SMTP und IMAP unterstützen. Es können E-Mails gesendet, empfangen und verwaltet werden.
+    """
 
+    def __init__(self, smtp_server: str, smtp_port: int, imap_server: str, imap_port: int, 
+                 email_address: str, password: str):
+        """
+        Initialisiert den EmailBot mit den SMTP- und IMAP-Serverinformationen sowie den
+        Zugangsdaten des Benutzers.
+        
+        :param smtp_server: SMTP-Server-Adresse des Anbieters
+        :param smtp_port: SMTP-Port des Anbieters
+        :param imap_server: IMAP-Server-Adresse des Anbieters
+        :param imap_port: IMAP-Port des Anbieters
+        :param email_address: Die E-Mail-Adresse des Benutzers
+        :param password: Das Passwort des E-Mail-Kontos (oder ein App-spezifisches Passwort)
+        """
+        self.smtp_server = smtp_server
+        self.smtp_port = smtp_port
+        self.imap_server = imap_server
+        self.imap_port = imap_port
+        self.email_address = email_address
+        self.password = password
 
-class EmailContent(BaseModel):
-    uid: str
-    subject: Optional[str] = "No Subject"
-    sender: EmailStr
-    content: str
-
-
-class EmailClient:
-    def __init__(self, settings: EmailSettings):
-        self.settings = settings
-        self.imap_connection = None
-
-    @staticmethod
-    def get_email_servers(email_address: str) -> dict:
-        domain = email_address.split('@')[-1]
-        servers = {
-            'gmail.com': ('smtp.gmail.com', 'imap.gmail.com'),
-            'yahoo.com': ('smtp.mail.yahoo.com', 'imap.mail.yahoo.com'),
-            'outlook.com': ('smtp-mail.outlook.com', 'outlook.office365.com'),
-            'outlook.de': ('smtp-mail.outlook.com', 'outlook.office365.com'),
-            'hotmail.com': ('smtp-mail.outlook.com', 'outlook.office365.com')
-        }
-        if domain not in servers:
-            raise ValueError(f"Unsupported email provider for domain: {domain}")
-        return {'smtp_server': servers[domain][0], 'imap_server': servers[domain][1]}
+    def _connect_smtp(self):
+        """
+        Stellt eine Verbindung zum SMTP-Server her und gibt die Serverinstanz zurück.
+        :return: SMTP-Verbindung
+        """
+        try:
+            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
+            server.starttls()
+            server.login(self.email_address, self.password)
+            logging.info("Erfolgreich mit dem SMTP-Server verbunden.")
+            return server
+        except Exception as e:
+            logging.error(f"Fehler beim Verbinden mit dem SMTP-Server: {e}")
+            return None
 
     def _connect_imap(self):
-        if not self.imap_connection:
-            self.imap_connection = imaplib.IMAP4_SSL(self.settings.imap_server)
-            self.imap_connection.login(self.settings.email_address, self.settings.password)
+        """
+        Stellt eine Verbindung zum IMAP-Server her und gibt die Mailbox-Instanz zurück.
+        :return: IMAP-Verbindung
+        """
+        try:
+            mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
+            mail.login(self.email_address, self.password)
+            logging.info("Erfolgreich mit dem IMAP-Server verbunden.")
+            return mail
+        except Exception as e:
+            logging.error(f"Fehler beim Verbinden mit dem IMAP-Server: {e}")
+            return None
 
-    def _disconnect_imap(self):
-        if self.imap_connection:
-            try:
-                self.imap_connection.logout()
-            except imaplib.IMAP4.abort:
-                logging.warning("IMAP connection was already closed.")
-            finally:
-                self.imap_connection = None
+    def send_email(self, recipient: str, subject: str, body: str, cc: Optional[List[str]] = None, bcc: Optional[List[str]] = None):
+        """
+        Sendet eine E-Mail an einen oder mehrere Empfänger.
+        
+        :param recipient: E-Mail-Adresse des Empfängers
+        :param subject: Betreff der E-Mail
+        :param body: Textinhalt der E-Mail
+        :param cc: Optional: Liste von CC-Empfängern
+        :param bcc: Optional: Liste von BCC-Empfängern
+        """
+        server = self._connect_smtp()
+        if not server:
+            return
+        
+        try:
+            # Erstellen der E-Mail-Nachricht
+            msg = EmailMessage()
+            msg["From"] = self.email_address
+            msg["To"] = recipient
+            msg["Subject"] = subject
+            if cc:
+                msg["Cc"] = ', '.join(cc)
+            if bcc:
+                msg["Bcc"] = ', '.join(bcc)
+            msg.set_content(body)
+            
+            # E-Mail senden
+            server.send_message(msg)
+            logging.info(f"E-Mail an {recipient} gesendet.")
+        except Exception as e:
+            logging.error(f"Fehler beim Senden der E-Mail: {e}")
+        finally:
+            server.quit()
 
-    def _fetch_emails(self, criteria: str, folder: str = 'inbox') -> List[EmailContent]:
-        self._connect_imap()
-        self.imap_connection.select(folder)
-
-        status, data = self.imap_connection.search(None, criteria)
-        if status != 'OK':
-            logging.error("Failed to search emails.")
+    def fetch_emails(self, folder: str = "inbox", search_criteria: str = 'ALL') -> List[dict]:
+        """
+        Holt E-Mails und deren UIDs aus einem bestimmten Ordner, standardmäßig der 'inbox'.
+        
+        :param folder: Der IMAP-Ordner, aus dem E-Mails geholt werden sollen
+        :param search_criteria: Suchkriterien für die E-Mails, z.B. 'ALL', 'UNSEEN', etc.
+        :return: Liste von Diktaten mit 'uid' und 'email' Objekten
+        """
+        mail = self._connect_imap()
+        if not mail:
             return []
 
-        mail_ids = data[0].split()
+        emails_with_uids = []
+        try:
+            mail.select(folder)
+            # Suchen nach E-Mails basierend auf den Suchkriterien
+            result, data = mail.uid('search', None, search_criteria)
+            if result != "OK":
+                logging.error(f"Fehler beim Durchsuchen der E-Mails im Ordner {folder}")
+                return []
+            
+            # Jede gefundene E-Mail und ihre UID holen
+            for uid in data[0].split():
+                result, msg_data = mail.uid('fetch', uid, "(RFC822)")
+                if result != "OK":
+                    logging.error(f"Fehler beim Abrufen der Nachricht mit UID {uid}")
+                    continue
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+                emails_with_uids.append({"uid": uid.decode(), "email": msg})
+            
+            logging.info(f"{len(emails_with_uids)} E-Mails aus dem Ordner {folder} geholt.")
+        except Exception as e:
+            logging.error(f"Fehler beim Abrufen der E-Mails: {e}")
+        finally:
+            mail.logout()
+        
+        return emails_with_uids
+
+
+    def list_folders(self) -> List[str]:
+        """
+        Listet alle verfügbaren Ordner (Mailboxen) auf dem IMAP-Server auf.
+        
+        :return: Liste der Ordnernamen
+        """
+        mail = self._connect_imap()
+        if not mail:
+            return []
+
+        folders = []
+        try:
+            result, data = mail.list()
+            if result == 'OK':
+                folders = [folder.decode().split(' "/" ')[-1] for folder in data]
+                logging.info("Ordner erfolgreich aufgelistet.")
+            else:
+                logging.error("Fehler beim Auflisten der Ordner.")
+        except Exception as e:
+            logging.error(f"Fehler beim Abrufen der Ordnerliste: {e}")
+        finally:
+            mail.logout()
+        
+        return folders
+
+    def move_email_to_folder(self, uid: str, target_folder: str):
+        """
+        Verschiebt eine E-Mail in einen anderen Ordner, basierend auf der UID.
+        
+        :param uid: Die UID der zu verschiebenden E-Mail
+        :param target_folder: Zielordner, in den die E-Mail verschoben werden soll
+        """
+        mail = self._connect_imap()
+        if not mail:
+            return
+        
+        try:
+            # Sicherstellen, dass der Zielordner existiert
+            result, data = mail.list()
+            folder_names = [folder.decode().split(' "/" ')[-1] for folder in data]
+            if target_folder not in folder_names:
+                logging.error(f"Der Zielordner '{target_folder}' existiert nicht.")
+                return
+            
+            # Wählen des Posteingangs (oder eines anderen Quellordners)
+            mail.select('inbox')
+            
+            # Kopieren der E-Mail in den Zielordner
+            result = mail.uid('COPY', uid, target_folder)
+            if result[0] == 'OK':
+                # Markieren der E-Mail als gelöscht im Quellordner
+                mail.uid('STORE', uid, '+FLAGS', '(\Deleted)')
+                mail.expunge()  # Löscht alle Nachrichten, die als gelöscht markiert sind
+                logging.info(f"E-Mail {uid} erfolgreich nach {target_folder} verschoben.")
+            else:
+                logging.error(f"Fehler beim Kopieren der E-Mail {uid} nach {target_folder}.")
+        
+        except imaplib.IMAP4.error as e:
+            logging.error(f"IMAP-Fehler: {e}")
+        except Exception as e:
+            logging.error(f"Fehler beim Verschieben der E-Mail {uid}: {e}")
+        finally:
+            mail.logout()
+
+
+    def reply_to_email(self, original_email: email.message.EmailMessage, reply_body: str):
+        """
+        Antwortet auf eine empfangene E-Mail.
+        
+        :param original_email: Die E-Mail, auf die geantwortet werden soll
+        :param reply_body: Der Text der Antwort
+        """
+        server = self._connect_smtp()
+        if not server:
+            return
+
+        try:
+            reply = EmailMessage()
+            reply["From"] = self.email_address
+            reply["To"] = original_email["From"]
+            reply["Subject"] = "Re: " + original_email["Subject"]
+            reply.set_content(reply_body)
+
+            # Antwort senden
+            server.send_message(reply)
+            logging.info(f"Antwort an {original_email['From']} gesendet.")
+        except Exception as e:
+            logging.error(f"Fehler beim Antworten auf die E-Mail: {e}")
+        finally:
+            server.quit()
+
+    def get_conversation_with_contact(self, contact_email: str, folder: str = "inbox") -> List[email.message.EmailMessage]:
+        """
+        Holt den gesamten Nachrichtenverlauf mit einer bestimmten E-Mail-Adresse (Kontakt) 
+        aus einem bestimmten Ordner.
+        
+        :param contact_email: Die E-Mail-Adresse des Kontakts, mit dem der Nachrichtenverlauf geholt werden soll
+        :param folder: Der IMAP-Ordner, aus dem der Verlauf geholt werden soll (standardmäßig 'inbox')
+        :return: Liste von E-Mails im Verlauf mit dem Kontakt
+        """
+        mail = self._connect_imap()
+        if not mail:
+            return []
+
         emails = []
-
-        for i in mail_ids:
-            status, data = self.imap_connection.fetch(i, '(UID RFC822)')
-            if status != 'OK':
-                logging.error(f"Failed to fetch email with ID {i.decode()}.")
-                continue
-
-            for response_part in data:
-                if isinstance(response_part, tuple):
-                    uid_match = re.search(r'UID (\d+)', response_part[0].decode())
-                    if not uid_match:
-                        logging.warning(f"Could not extract UID for email ID {i.decode()}. Skipping this email.")
-                        continue
-
-                    uid = uid_match.group(1)
-                    msg = email_lib.message_from_bytes(response_part[1])
-                    mail_from = msg['from']
-                    mail_subject = msg['subject']
-                    mail_content = self.decode_email_content(msg)
-
-                    email = EmailContent(
-                        uid=uid,
-                        sender=mail_from,
-                        subject=mail_subject,
-                        content=mail_content
-                    )
-                    emails.append(email)
-
+        try:
+            mail.select(folder)
+            # Suchen nach E-Mails, die an oder von der angegebenen Adresse gesendet wurden
+            search_criteria = f'(OR FROM "{contact_email}" TO "{contact_email}")'
+            result, data = mail.search(None, search_criteria)
+            if result != "OK":
+                logging.error(f"Fehler beim Suchen des Verlaufs mit {contact_email} im Ordner {folder}")
+                return []
+            
+            # Jede gefundene E-Mail holen
+            for num in data[0].split():
+                result, msg_data = mail.fetch(num, "(RFC822)")
+                if result != "OK":
+                    logging.error(f"Fehler beim Abrufen der Nachricht mit ID {num}")
+                    continue
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+                emails.append(msg)
+            
+            logging.info(f"{len(emails)} Nachrichten mit {contact_email} aus dem Ordner {folder} abgerufen.")
+        except Exception as e:
+            logging.error(f"Fehler beim Abrufen des Verlaufs mit {contact_email}: {e}")
+        finally:
+            mail.logout()
+        
         return emails
-
-
-    def send_email(self, recipient: EmailStr, subject: str, body: str):
-        msg = EmailMessage()
-        msg['Subject'] = subject
-        msg['From'] = self.settings.email_address
-        msg['To'] = recipient
-        msg.set_content(body)
-
-        with smtplib.SMTP(self.settings.smtp_server, 587) as smtp:
-            smtp.starttls()
-            smtp.login(self.settings.email_address, self.settings.password)
-            smtp.send_message(msg)
-        print("Email sent successfully.")
-
-    def decode_email_content(self, msg: Message) -> str:
-        mail_content = ""
-        if msg.is_multipart():
-            for part in msg.walk():
-                content_type = part.get_content_type()
-                content_disposition = str(part.get("Content-Disposition"))
-
-                if content_type == "text/plain" and "attachment" not in content_disposition:
-                    try:
-                        charset = part.get_content_charset() or "utf-8"
-                        mail_content += part.get_payload(decode=True).decode(charset, errors="replace")
-                    except Exception:
-                        mail_content += "[Error decoding content]"
-        else:
-            try:
-                charset = msg.get_content_charset() or "utf-8"
-                mail_content = msg.get_payload(decode=True).decode(charset, errors="replace")
-            except Exception:
-                mail_content = "[Error decoding content]"
-
-        return mail_content
-
-    def receive_emails(self) -> List[EmailContent]:
-        return self._fetch_emails(criteria='ALL')
-
-    def get_email_history(self, contact: EmailStr, folder: str = 'inbox') -> List[EmailContent]:
-        criteria = f'(OR FROM "{contact}" TO "{contact}")'
-        return self._fetch_emails(criteria=criteria, folder=folder)
-
-    def move_email(self, uid: str, destination_folder: str, source_folder: str = 'inbox'):
-        self._connect_imap()
-        self.imap_connection.select(source_folder)
-
-        result = self.imap_connection.uid('COPY', uid, destination_folder)
-        if result[0] == 'OK':
-            self.imap_connection.uid('STORE', uid, '+FLAGS', '(\Deleted)')
-            self.imap_connection.expunge()
-            print(f"Email {uid} moved to {destination_folder} successfully.")
-        else:
-            print(f"Failed to move email {uid} to {destination_folder}.")
-
-    def __del__(self):
-        self._disconnect_imap()
-
-
-# Example usage:
-if __name__ == "__main__":
-    load_dotenv()
-    email_address = os.getenv("EMAIL_ADDRESS")
-    password = os.getenv("EMAIL_PASSWORD")
-    
-    servers = EmailClient.get_email_servers(email_address)
-    settings = EmailSettings(email_address=email_address, password=password, smtp_server=servers['smtp_server'], imap_server=servers['imap_server'])
-
-    client = EmailClient(settings)
-    
-    # Beispiel zum Senden einer E-Mail
-    #client.send_email("d.trebis@outlook.de", "Test Subject", "This is a test email sent from Python.")
-    
-    # Beispiel zum Empfangen von E-Mails
-    emails = client.receive_emails()
-    for email in emails:
-        print(f"UID='{email.uid}' sender='{email.sender}' subject='{email.subject}'  content='{email.content}'")
-    
-    # Beispiel zum Abrufen des E-Mail-Verlaufs
-    history = client.get_email_history("d.trebis@outlook.de", folder='Inbox')
-    for email in history:
-        print(f"UID='{email.uid}' sender='{email.sender}' subject='{email.subject}'  content='{email.content}'")
-    
-    # Beispiel zum Verschieben einer E-Mail
-    if emails:
-        first_email_uid = emails[0].uid
-        client.move_email(first_email_uid, destination_folder='Archiv')
