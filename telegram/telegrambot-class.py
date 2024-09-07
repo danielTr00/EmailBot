@@ -148,40 +148,61 @@ class TelegramBot:
             logging.error(f"Failed to send file to {chat_id}: {e}")
 
 
-    async def receive_and_save_file(self, message: Message):
+    async def receive_and_save_file(self, message: Message, file_directory: Optional[str] = None, file_name: Optional[str] = None) -> str:
         """
-        Receives any file from a message and saves it in the 'files' directory.
+        Receives any file from a message and saves it in the specified directory.
+
+        :param message: The Telegram message containing the file (photo or document).
+        :param file_directory: The directory where the file should be saved. Defaults to 'self.file_directory'.
+        :param file_name: The desired name of the file (including extension). If not provided, a default name will be used.
+        :return: The full path to the saved file.
         """
         file_id = None
-        file_type = None
+        default_file_name = None
 
+        # Prüfen, ob es sich um ein Foto oder ein Dokument handelt und die entsprechende Dateiinformation verwenden
         if message.photo:
             file_id = message.photo[-1].file_id
-            file_type = 'photo'
+            default_file_name = f"{file_id}.jpg"  # Standard-Bildformat .jpg
         elif message.document:
             file_id = message.document.file_id
-            file_type = 'document'
-        elif message.audio:
-            file_id = message.audio.file_id
-            file_type = 'audio'
-        elif message.video:
-            file_id = message.video.file_id
-            file_type = 'video'
-        else:
+            default_file_name = message.document.file_name  # Original-Dateiname des Dokuments
+
+        if file_id is None:
             logging.info("No file in the message.")
-            return
+            return None
+
+        # Setze das Verzeichnis, falls es nicht angegeben wurde
+        if not file_directory:
+            file_directory = self.file_directory  # Standardverzeichnis verwenden
+
+        # Setze den Dateinamen, falls keiner angegeben wurde
+        if not file_name:
+            file_name = default_file_name
+
+        # Erstelle den vollständigen Pfad der Datei
+        file_path = os.path.join(file_directory, file_name)
+
+        # Stelle sicher, dass das Verzeichnis existiert
+        if not os.path.exists(file_directory):
+            os.makedirs(file_directory)
 
         try:
+            # Hole die Dateiinformationen von Telegram
             file_info = await self.bot.get_file(file_id)
-            file_path = file_info.file_path
-            file_name = os.path.join(self.file_directory, f"{file_id}.{file_type}")
 
-            async with aiofiles.open(file_name, 'wb') as f:
-                await self.bot.download_file(file_path, f)
-                logging.info(f"File saved to {file_name}")
+            # Datei asynchron herunterladen und speichern
+            async with aiofiles.open(file_path, 'wb') as f:
+                file_data = await self.bot.download_file(file_info.file_path)
+                await f.write(file_data.read())  # Schreibe den Inhalt der Datei
+                print(f"File saved to {file_path}")
+
+            # Rückgabe des Dateipfades, um den Speicherort zu kennen
+            return file_path
 
         except Exception as e:
             logging.error(f"Failed to receive and save file: {e}")
+            return None
 
     def save_message_to_history(self, message: Message):
         """
