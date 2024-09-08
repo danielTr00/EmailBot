@@ -4,7 +4,12 @@ import email
 from email.message import EmailMessage
 from typing import List, Optional
 import logging
-
+import os
+from email import encoders
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+import time
 # Initialisiere Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -34,34 +39,52 @@ class EmailBot:
         self.email_address = email_address
         self.password = password
 
-    def _connect_smtp(self):
+    def _connect_smtp(self, retries=20, delay=1):
         """
         Stellt eine Verbindung zum SMTP-Server her und gibt die Serverinstanz zurück.
-        :return: SMTP-Verbindung
+        Es wird eine Retry-Logik verwendet, um die Verbindung stabiler zu machen.
+        :param retries: Anzahl der Versuche, eine Verbindung herzustellen
+        :param delay: Wartezeit in Sekunden zwischen den Versuchen
+        :return: SMTP-Verbindung oder None bei Fehler
         """
-        try:
-            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-            server.starttls()
-            server.login(self.email_address, self.password)
-            logging.info("Erfolgreich mit dem SMTP-Server verbunden.")
-            return server
-        except Exception as e:
-            logging.error(f"Fehler beim Verbinden mit dem SMTP-Server: {e}")
-            return None
+        for attempt in range(retries):
+            try:
+                server = smtplib.SMTP(self.smtp_server, self.smtp_port)
+                server.starttls()
+                server.login(self.email_address, self.password)
+                logging.info("Erfolgreich mit dem SMTP-Server verbunden.")
+                return server
+            except Exception as e:
+                logging.error(f"Fehler beim Verbinden mit dem SMTP-Server: {e}")
+                if attempt < retries - 1:
+                    logging.info(f"Erneuter Verbindungsversuch in {delay} Sekunden...")
+                    time.sleep(delay)
+                else:
+                    logging.error("Maximale Anzahl der Verbindungsversuche erreicht.")
+        return None
 
-    def _connect_imap(self):
+    def _connect_imap(self, retries=20, delay=1):
         """
         Stellt eine Verbindung zum IMAP-Server her und gibt die Mailbox-Instanz zurück.
-        :return: IMAP-Verbindung
+        Es wird eine Retry-Logik verwendet, um die Verbindung stabiler zu machen.
+        :param retries: Anzahl der Versuche, eine Verbindung herzustellen
+        :param delay: Wartezeit in Sekunden zwischen den Versuchen
+        :return: IMAP-Verbindung oder None bei Fehler
         """
-        try:
-            mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
-            mail.login(self.email_address, self.password)
-            logging.info("Erfolgreich mit dem IMAP-Server verbunden.")
-            return mail
-        except Exception as e:
-            logging.error(f"Fehler beim Verbinden mit dem IMAP-Server: {e}")
-            return None
+        for attempt in range(retries):
+            try:
+                mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
+                mail.login(self.email_address, self.password)
+                logging.info("Erfolgreich mit dem IMAP-Server verbunden.")
+                return mail
+            except Exception as e:
+                logging.error(f"Fehler beim Verbinden mit dem IMAP-Server: {e}")
+                if attempt < retries - 1:
+                    logging.info(f"Erneuter Verbindungsversuch in {delay} Sekunden...")
+                    time.sleep(delay)
+                else:
+                    logging.error("Maximale Anzahl der Verbindungsversuche erreicht.")
+        return None
 
     def send_email(self, recipient: str, subject: str, body: str, cc: Optional[List[str]] = None, bcc: Optional[List[str]] = None):
         """
@@ -268,3 +291,57 @@ class EmailBot:
             mail.logout()
         
         return emails
+
+    def send_email_with_attachment(self, recipient: str, subject: str, body: str, attachments: Optional[List[str]] = None, cc: Optional[List[str]] = None, bcc: Optional[List[str]] = None):
+        """
+        Sendet eine E-Mail mit einem oder mehreren Anhängen.
+        
+        :param recipient: E-Mail-Adresse des Empfängers
+        :param subject: Betreff der E-Mail
+        :param body: Textinhalt der E-Mail
+        :param attachments: Liste von Dateipfaden zu den Anhängen
+        :param cc: Optional: Liste von CC-Empfängern
+        :param bcc: Optional: Liste von BCC-Empfängern
+        """
+        server = self._connect_smtp()
+        if not server:
+            return
+
+        try:
+            # Erstellen der E-Mail-Nachricht mit MIMEMultipart (für Anhänge)
+            msg = MIMEMultipart()
+            msg["From"] = self.email_address
+            msg["To"] = recipient
+            msg["Subject"] = subject
+            if cc:
+                msg["Cc"] = ', '.join(cc)
+            if bcc:
+                msg["Bcc"] = ', '.join(bcc)
+            
+            # Füge den Nachrichtentext hinzu
+            msg.attach(MIMEText(body, "plain"))
+            
+            # Anhänge hinzufügen
+            if attachments:
+                for file_path in attachments:
+                    if os.path.isfile(file_path):
+                        with open(file_path, "rb") as file:
+                            # Erstellen des MIMEBase Objekts für den Anhang
+                            part = MIMEBase("application", "octet-stream")
+                            part.set_payload(file.read())
+                            encoders.encode_base64(part)
+                            part.add_header(
+                                "Content-Disposition", f"attachment; filename= {os.path.basename(file_path)}"
+                            )
+                            msg.attach(part)
+                    else:
+                        logging.warning(f"Anhang '{file_path}' existiert nicht oder ist kein gültiger Dateipfad.")
+            
+            # E-Mail senden
+            server.send_message(msg)
+            logging.info(f"E-Mail mit Anhang an {recipient} gesendet.")
+        
+        except Exception as e:
+            logging.error(f"Fehler beim Senden der E-Mail mit Anhang: {e}")
+        finally:
+            server.quit()
