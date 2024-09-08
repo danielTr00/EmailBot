@@ -10,6 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 import time
+
 # Initialisiere Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -120,28 +121,28 @@ class EmailBot:
         finally:
             server.quit()
 
-    def fetch_emails(self, folder: str = "inbox", search_criteria: str = 'ALL') -> List[dict]:
+    def fetch_emails(self, folder: str = "inbox", search_criteria: str = 'ALL', save_attachments: bool = True, attachment_dir: str = "./attachments") -> List[dict]:
         """
-        Holt E-Mails und deren UIDs aus einem bestimmten Ordner, standardmäßig der 'inbox'.
+        Holt E-Mails aus einem bestimmten Ordner, speichert Anhänge und gibt Infos aus.
         
-        :param folder: Der IMAP-Ordner, aus dem E-Mails geholt werden sollen
-        :param search_criteria: Suchkriterien für die E-Mails, z.B. 'ALL', 'UNSEEN', etc.
-        :return: Liste von Diktaten mit 'uid' und 'email' Objekten
+        :param folder: Der IMAP-Ordner
+        :param search_criteria: Suchkriterien für die E-Mails
+        :param save_attachments: Ob Anhänge gespeichert werden sollen
+        :param attachment_dir: Ordner zum Speichern der Anhänge
+        :return: Liste von E-Mails mit UID, Betreff, Empfangsdatum, Text und Anhangsnamen
         """
         mail = self._connect_imap()
         if not mail:
             return []
 
-        emails_with_uids = []
+        emails_with_details = []
         try:
             mail.select(folder)
-            # Suchen nach E-Mails basierend auf den Suchkriterien
             result, data = mail.uid('search', None, search_criteria)
             if result != "OK":
                 logging.error(f"Fehler beim Durchsuchen der E-Mails im Ordner {folder}")
                 return []
             
-            # Jede gefundene E-Mail und ihre UID holen
             for uid in data[0].split():
                 result, msg_data = mail.uid('fetch', uid, "(RFC822)")
                 if result != "OK":
@@ -149,16 +150,55 @@ class EmailBot:
                     continue
                 raw_email = msg_data[0][1]
                 msg = email.message_from_bytes(raw_email)
-                emails_with_uids.append({"uid": uid.decode(), "email": msg})
+
+                # E-Mail Infos extrahieren
+                email_info = {
+                    "uid": uid.decode(),
+                    "subject": msg["subject"],
+                    "from": msg["from"],
+                    "to": msg["to"],
+                    "date": msg["date"],
+                    "text": "",
+                    "attachments": []
+                }
+
+                # Textinhalt der E-Mail extrahieren
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        content_type = part.get_content_type()
+                        content_disposition = part.get_content_disposition()
+
+                        # Textinhalt extrahieren (Text)
+                        if content_disposition is None:  # Nicht-Anhang
+                            if content_type == "text/plain":
+                                email_info["text"] += part.get_payload(decode=True).decode('utf-8', errors='replace').strip()
+
+                        # Anhänge speichern
+                        if save_attachments == True:
+                            if content_disposition == 'attachment':
+                                filename = part.get_filename()
+                                if filename:
+                                    email_info["attachments"].append(filename)
+                                    if not os.path.exists(attachment_dir):
+                                        os.makedirs(attachment_dir)
+                                    with open(os.path.join(attachment_dir, filename), "wb") as f:
+                                        f.write(part.get_payload(decode=True))
+                                    logging.info(f"Anhang {filename} gespeichert.")
+                        else:
+                            logging.info(f"Anhang {filename} nicht gespeichert.")
+                else:
+                    # Falls die E-Mail nicht multipart ist (einfacher Text)
+                    email_info["text"] = msg.get_payload(decode=True).decode('utf-8', errors='replace').strip()
+
+                emails_with_details.append(email_info)
             
-            logging.info(f"{len(emails_with_uids)} E-Mails aus dem Ordner {folder} geholt.")
+            logging.info(f"{len(emails_with_details)} E-Mails aus dem Ordner {folder} geholt.")
         except Exception as e:
             logging.error(f"Fehler beim Abrufen der E-Mails: {e}")
         finally:
             mail.logout()
-        
-        return emails_with_uids
 
+        return emails_with_details
 
     def list_folders(self) -> List[str]:
         """
@@ -251,30 +291,28 @@ class EmailBot:
         finally:
             server.quit()
 
-    def get_conversation_with_contact(self, contact_email: str, folder: str = "inbox") -> List[email.message.EmailMessage]:
+    def get_conversation_with_contact(self, contact_email: str, folder: str = "inbox") -> List[dict]:
         """
-        Holt den gesamten Nachrichtenverlauf mit einer bestimmten E-Mail-Adresse (Kontakt) 
-        aus einem bestimmten Ordner.
+        Holt den Nachrichtenverlauf mit einer bestimmten E-Mail-Adresse aus einem bestimmten Ordner.
+        Gibt zusätzlich den Text, das Empfangsdatum und die Anhänge jeder E-Mail an.
         
-        :param contact_email: Die E-Mail-Adresse des Kontakts, mit dem der Nachrichtenverlauf geholt werden soll
-        :param folder: Der IMAP-Ordner, aus dem der Verlauf geholt werden soll (standardmäßig 'inbox')
-        :return: Liste von E-Mails im Verlauf mit dem Kontakt
+        :param contact_email: Die E-Mail-Adresse des Kontakts
+        :param folder: Der IMAP-Ordner
+        :return: Liste von E-Mails mit Betreff, Empfangsdatum, Text und Anhängen
         """
         mail = self._connect_imap()
         if not mail:
             return []
 
-        emails = []
+        conversations = []
         try:
             mail.select(folder)
-            # Suchen nach E-Mails, die an oder von der angegebenen Adresse gesendet wurden
             search_criteria = f'(OR FROM "{contact_email}" TO "{contact_email}")'
             result, data = mail.search(None, search_criteria)
             if result != "OK":
                 logging.error(f"Fehler beim Suchen des Verlaufs mit {contact_email} im Ordner {folder}")
                 return []
             
-            # Jede gefundene E-Mail holen
             for num in data[0].split():
                 result, msg_data = mail.fetch(num, "(RFC822)")
                 if result != "OK":
@@ -282,15 +320,45 @@ class EmailBot:
                     continue
                 raw_email = msg_data[0][1]
                 msg = email.message_from_bytes(raw_email)
-                emails.append(msg)
+
+                # Extrahiere E-Mail-Details
+                email_info = {
+                    "subject": msg["subject"],
+                    "from": msg["from"],
+                    "to": msg["to"],
+                    "date": msg["date"],
+                    "text": "",
+                    "attachments": []
+                }
+
+                # Überprüfen auf Anhänge und Textinhalt extrahieren
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        content_type = part.get_content_type()
+                        content_disposition = part.get_content_disposition()
+
+                        # Nur "text/plain"-Inhalt extrahieren, HTML wird ignoriert
+                        if content_disposition is None and content_type == "text/plain":  
+                            email_info["text"] += part.get_payload(decode=True).decode('utf-8', errors='replace').strip()
+
+                        # Anhänge extrahieren
+                        if content_disposition == 'attachment':
+                            filename = part.get_filename()
+                            if filename:
+                                email_info["attachments"].append(filename)
+                else:
+                    # Falls die E-Mail nicht multipart ist (einfacher Text)
+                    email_info["text"] = msg.get_payload(decode=True).decode('utf-8', errors='replace').strip()
+
+                conversations.append(email_info)
             
-            logging.info(f"{len(emails)} Nachrichten mit {contact_email} aus dem Ordner {folder} abgerufen.")
+            logging.info(f"{len(conversations)} Nachrichten mit {contact_email} aus dem Ordner {folder} abgerufen.")
         except Exception as e:
             logging.error(f"Fehler beim Abrufen des Verlaufs mit {contact_email}: {e}")
         finally:
             mail.logout()
-        
-        return emails
+
+        return conversations
 
     def send_email_with_attachment(self, recipient: str, subject: str, body: str, attachments: Optional[List[str]] = None, cc: Optional[List[str]] = None, bcc: Optional[List[str]] = None):
         """
