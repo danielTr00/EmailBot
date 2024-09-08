@@ -2,15 +2,14 @@ import logging
 import os
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile 
+from aiogram.types import Message, FSInputFile
 from typing import List, Dict, Callable, Optional
 import asyncio
 from pydantic import BaseModel, Field
 from aiohttp import ClientSession
-from prometheus_client import Counter, Summary
 import aiofiles
 
-# Pydantic Models
+# Pydantic Models to manage message history and active chats
 class MessageHistory(BaseModel):
     message_id: int
     from_user: str = Field(default="Bot")
@@ -20,16 +19,15 @@ class ActiveChat(BaseModel):
     chat_id: int
     username: str
 
-# Prometheus metrics for monitoring
-messages_sent_counter = Counter('telegrambot_messages_sent_total', 'Total number of messages sent')
-message_send_time = Summary('telegrambot_message_send_time_seconds', 'Time spent sending a message')
-
+# TelegramBot class to manage all bot operations
 class TelegramBot:
     def __init__(self, token: str, dispatcher: Optional[Dispatcher] = None, router: Optional[Router] = None):
         """
         Initializes the TelegramBot with the provided token and sets up the bot, dispatcher, and router.
 
         :param token: The token to connect the bot with the Telegram API. Must be exactly 46 characters long.
+        :param dispatcher: Optional custom dispatcher to handle events.
+        :param router: Optional custom router to register message and command handlers.
         """
         if len(token) != 46:
             raise ValueError("Invalid Telegram token. It must be exactly 46 characters long.")
@@ -39,97 +37,85 @@ class TelegramBot:
         self.router = router if router else Router()
         self.dp.include_router(self.router)
 
+        # Dictionary to store chat histories
         self.chat_histories: Dict[int, List[MessageHistory]] = {}
+        
+        # Register default commands (/start and /stop)
         self.register_default_commands()
+
+        # Event loop for asynchronous operations
         self.loop = asyncio.get_event_loop()
 
-        # Ensure the 'files' directory exists
+        # Directory for saving files received from users
         self.file_directory = "files"
         if not os.path.exists(self.file_directory):
             os.makedirs(self.file_directory)
 
-    def register_default_commands(self, start_command: str = "start", stop_command: str = "stop"):
+    def register_default_commands(self):
         """
         Registers default commands like /start and /stop.
         """
-        self.add_command(start_command, self.handle_start)
-        self.add_command(stop_command, self.handle_stop)
+        self.add_command("start", self.handle_start)
+        self.add_command("stop", self.handle_stop)
 
-    def add_command(self, command_name: str, command_handler: Callable):
+    def add_command(self, command_name: str, command_handler: Callable, description: str = None):
         """
-        Adds a new command to the bot.
+        Adds a new command to the bot and registers it.
+
+        :param command_name: Name of the command (e.g., 'start', 'help').
+        :param command_handler: The function that handles the command.
+        :param description: Optional description for the command.
         """
+        if description:
+            logging.info(f"Registering command /{command_name}: {description}")
+        else:
+            logging.info(f"Registering command /{command_name}")
+        
         self.router.message.register(command_handler, Command(commands=[command_name]))
 
-    async def handle_start(self, message: Message, start_message: str = "Willkommen! Der Bot ist jetzt aktiv."):
+    async def handle_start(self, message: Message):
         """
         Handles the /start command and sends a welcome message back.
         """
-        logging.info(f"Received /start command from {message.from_user.username}")
-        await self.send_message(message.chat.id, start_message)
+        await self.send_message(message.chat.id, "Willkommen! Der Bot ist jetzt aktiv.")
         self.save_message_to_history(message)
 
-    async def handle_stop(self, message: Message, stop_message: str = "Der Bot wird jetzt deaktiviert. Bis zum nächsten Mal!"):
+    async def handle_stop(self, message: Message):
         """
         Handles the /stop command and sends a goodbye message back.
         """
-        logging.info(f"Received /stop command from {message.from_user.username}")
-        await self.send_message(message.chat.id, stop_message)
+        await self.send_message(message.chat.id, "Der Bot wird jetzt deaktiviert. Bis zum nächsten Mal!")
         self.save_message_to_history(message)
 
-    async def send_message(self, chat_id: int, text: str, parse_mode: Optional[str] = None, disable_web_page_preview: Optional[bool] = None, disable_notification: Optional[bool] = None):
+    async def send_message(self, chat_id: int, text: str):
         """
         Sends a message to a specific chat.
+
+        :param chat_id: ID of the chat to send the message to.
+        :param text: The text content of the message.
         """
         try:
-            message = await self.bot.send_message(chat_id, text, parse_mode=parse_mode, disable_web_page_preview=disable_web_page_preview, disable_notification=disable_notification)
+            message = await self.bot.send_message(chat_id, text)
             logging.info(f"Message sent to {chat_id}: {text}")
-            messages_sent_counter.inc()  # Increment the messages sent counter
             self.save_message_to_history(message)
         except ClientSession as e:
             logging.error(f"Connection error when sending message to {chat_id}: {e}")
         except Exception as e:
             logging.error(f"Failed to send message to {chat_id}: {e}")
 
-    def get_chat_history(self, chat_id: int, limit: int = 100) -> List[MessageHistory]:
-        """
-        Returns the chat history for a given chat.
-
-        :param chat_id: The ID of the chat to retrieve history from.
-        :param limit: The maximum number of messages to retrieve.
-        :return: A list of MessageHistory objects.
-        """
-        if chat_id not in self.chat_histories:
-            return []
-        
-        return self.chat_histories[chat_id][-limit:]
-
-    def get_active_chats(self) -> List[ActiveChat]:
-        """
-        Returns a list of active chats along with their usernames.
-        """
-        active_chats = []
-        for chat_id, messages in self.chat_histories.items():
-            if messages:
-                last_message = messages[-1]
-                active_chats.append(ActiveChat(chat_id=chat_id, username=last_message.from_user))
-        return active_chats
-
     async def send_file(self, chat_id: int, file_path: str, caption: Optional[str] = None):
         """
-        Sends any type of file (image, document, video, etc.) to a specific chat.
+        Sends a file to a specific chat.
 
         :param chat_id: ID of the chat to send the file to.
         :param file_path: Path to the file to send.
         :param caption: Optional caption for the file.
         """
         try:
-            # Automatisch das FSInputFile erstellen
             file_to_send = FSInputFile(file_path)
-
             file_extension = os.path.splitext(file_path)[1].lower()
 
-            # Datei anhand der Erweiterung als Foto, Video, Audio oder Dokument senden
+            # Send the file based on its type
             if file_extension in [".jpg", ".jpeg", ".png", ".gif", ".bmp"]:
                 await self.bot.send_photo(chat_id, photo=file_to_send, caption=caption)
                 logging.info(f"Photo sent to {chat_id}: {file_path}")
@@ -140,13 +126,11 @@ class TelegramBot:
                 await self.bot.send_audio(chat_id, audio=file_to_send, caption=caption)
                 logging.info(f"Audio sent to {chat_id}: {file_path}")
             else:
-                # Wenn es kein spezifisches Medienformat ist, wird es als Dokument gesendet
                 await self.bot.send_document(chat_id, document=file_to_send, caption=caption)
                 logging.info(f"Document sent to {chat_id}: {file_path}")
 
         except Exception as e:
             logging.error(f"Failed to send file to {chat_id}: {e}")
-
 
     async def receive_and_save_file(self, message: Message, file_directory: Optional[str] = None, file_name: Optional[str] = None) -> str:
         """
@@ -160,44 +144,36 @@ class TelegramBot:
         file_id = None
         default_file_name = None
 
-        # Prüfen, ob es sich um ein Foto oder ein Dokument handelt und die entsprechende Dateiinformation verwenden
+        # Check if it's a photo or a document and get the relevant file info
         if message.photo:
             file_id = message.photo[-1].file_id
-            default_file_name = f"{file_id}.jpg"  # Standard-Bildformat .jpg
+            default_file_name = f"{file_id}.jpg"
         elif message.document:
             file_id = message.document.file_id
-            default_file_name = message.document.file_name  # Original-Dateiname des Dokuments
+            default_file_name = message.document.file_name
 
         if file_id is None:
             logging.info("No file in the message.")
             return None
 
-        # Setze das Verzeichnis, falls es nicht angegeben wurde
-        if not file_directory:
-            file_directory = self.file_directory  # Standardverzeichnis verwenden
+        # Set the directory and file name if not provided
+        file_directory = file_directory or self.file_directory
+        file_name = file_name or default_file_name
 
-        # Setze den Dateinamen, falls keiner angegeben wurde
-        if not file_name:
-            file_name = default_file_name
-
-        # Erstelle den vollständigen Pfad der Datei
+        # Construct the full path to save the file
         file_path = os.path.join(file_directory, file_name)
 
-        # Stelle sicher, dass das Verzeichnis existiert
+        # Ensure the directory exists
         if not os.path.exists(file_directory):
             os.makedirs(file_directory)
 
         try:
-            # Hole die Dateiinformationen von Telegram
+            # Get file info and download
             file_info = await self.bot.get_file(file_id)
-
-            # Datei asynchron herunterladen und speichern
             async with aiofiles.open(file_path, 'wb') as f:
                 file_data = await self.bot.download_file(file_info.file_path)
-                await f.write(file_data.read())  # Schreibe den Inhalt der Datei
-                print(f"File saved to {file_path}")
-
-            # Rückgabe des Dateipfades, um den Speicherort zu kennen
+                await f.write(file_data.read())
+            logging.info(f"File saved to {file_path}")
             return file_path
 
         except Exception as e:
@@ -218,11 +194,11 @@ class TelegramBot:
             text=message.text or "[File]"
         ))
 
-    async def start(self, drop_pending_updates: bool = True):
+    async def start(self):
         """
         Starts the bot and dispatcher in asynchronous mode to respond to new updates.
         """
-        await self.bot.delete_webhook(drop_pending_updates=drop_pending_updates)
+        await self.bot.delete_webhook(drop_pending_updates=True)
         await self.dp.start_polling(self.bot)
 
     async def stop(self):
@@ -230,11 +206,9 @@ class TelegramBot:
         Stops the bot and closes all open connections gracefully.
         """
         print("Stopping the bot...")
-        # Hier kein await, wenn shutdown() nicht async ist
         self.dp.shutdown()
         await self.bot.session.close()
         print("Bot stopped successfully.")
-
 
     async def __aenter__(self):
         """
@@ -248,3 +222,27 @@ class TelegramBot:
         Ensures the bot stops and cleans up resources when used in a 'with' statement.
         """
         await self.stop()
+
+    def get_chat_history(self, chat_id: int, limit: int = 100) -> List[MessageHistory]:
+        """
+        Returns the chat history for a given chat.
+
+        :param chat_id: The ID of the chat to retrieve history from.
+        :param limit: The maximum number of messages to retrieve.
+        :return: A list of MessageHistory objects.
+        """
+        if chat_id not in self.chat_histories:
+            return []
+        
+        return self.chat_histories[chat_id][-limit:]
+    
+    def get_active_chats(self) -> List[ActiveChat]:
+        """
+        Returns a list of active chats along with their usernames.
+        """
+        active_chats = []
+        for chat_id, messages in self.chat_histories.items():
+            if messages:
+                last_message = messages[-1]
+                active_chats.append(ActiveChat(chat_id=chat_id, username=last_message.from_user))
+        return active_chats
